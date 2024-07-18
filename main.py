@@ -1,12 +1,22 @@
 import requests
 from requests.exceptions import RequestException
 import time
-import json
 import os
 from dotenv import load_dotenv
 from datetime import date, timedelta
 import shutil
 import openai
+import asyncio
+from mutagen.mp3 import MP3
+from azure.identity import ClientSecretCredential
+from msgraph import GraphServiceClient
+from msgraph.generated.users.item.send_mail.send_mail_post_request_body import SendMailPostRequestBody
+from msgraph.generated.models.message import Message
+from msgraph.generated.models.item_body import ItemBody
+from msgraph.generated.models.body_type import BodyType
+from msgraph.generated.models.recipient import Recipient
+from msgraph.generated.models.email_address import EmailAddress
+
 
 def download(url, idx):
     '''
@@ -23,7 +33,7 @@ def download(url, idx):
         Exception: If an error occurs during the download process.
     '''
     try:
-        recording_response = requests.get(url, auth=(os.getenv('EMAIL'), os.getenv('Z_TOKEN')), stream=True)
+        recording_response = requests.get(url, auth=(os.getenv('Z_EMAIL'), os.getenv('Z_TOKEN')), stream=True)
         if recording_response.status_code == 200:
             file_path = f'recordings/recording_{idx}.mp3'
             with open(file_path, 'wb') as f:
@@ -65,17 +75,26 @@ def summarize(file_path, ticket, client, retries, idx):
         with open(txt_fp, "w") as t:
             t.write(transcription.text)
         ticket['transcription'] = transcription.text
-        messages = [
+        messages_summary = [
             {'role': 'system', 'content': 'You are an intelligent assistant.'},
             {'role': 'user', 'content': 
-            f'Summarize the issue faced by customer {ticket["customer"]} and how agent {ticket["agent"]} addressed it. ' + 
-            f'Indicate if the issue was resolved, using no more than 150 words. Transcript: {transcription.text}'}
+            f'Summarize the issue faced by customer {ticket["customer"]} and how agent {ticket["agent"]} addressed it. Include the name of the customer\'s company if mentioned.' + 
+            f'Then, if the issue was resolved, say "This issue was resolved.", otherwise say "This issue was not resolved." ' +
+            f'Use no more than 150 words. Transcript: {transcription.text}'}
         ]
         for attempt in range(retries):
             try:
-                chat = client.chat.completions.create(messages=messages, model="gpt-4o")
+                chat = client.chat.completions.create(messages=messages_summary, model="gpt-4o")
                 print(chat.choices[0].message.content)
                 ticket['summary'] = chat.choices[0].message.content
+                messages_company = [
+                    {'role': 'system', 'content': 'You are an intelligent assistant.'},
+                    {'role': 'user', 'content': f'Return only the name of customer {ticket["customer"]}\'s company or Unknown based on this summary: {ticket["summary"]}.'}
+                ]
+                chat = client.chat.completions.create(messages=messages_company, model="gpt-4o")
+                ticket['company'] = chat.choices[0].message.content
+                if "This issue was resolved" in ticket['summary']:
+                    ticket['resolved'] = True
                 break  # Exit the retry loop if successful
             except (openai.InternalServerError, RequestException) as e:
                 if attempt < retries - 1:
@@ -92,9 +111,6 @@ def summarize(file_path, ticket, client, retries, idx):
 
 # Main code
 
-num_days = 1
-curr = num_days
-count = 0
 tickets_info = []
 
 # Clear the folders before downloading
@@ -106,63 +122,56 @@ if os.path.exists('transcriptions'):
     shutil.rmtree('transcriptions')
 os.makedirs('transcriptions')
 
-while curr > 0:
-    load_dotenv()
-    yesterday = date.today() - timedelta(days=curr)
-    today = date.today() - timedelta(days=curr-1)
-
-    # Specify the timeframe for your search (ISO 8601 format)
-    start_time = f'{yesterday}T04:00:00Z'
-    end_time = f'{today}T03:59:59Z'
-    subdomain = os.getenv('SUBDOMAIN')
-
-    # Search URL
-    search_url = f'https://{subdomain}.zendesk.com/api/v2/search.json'
-    params = {
-        'query': f'type:ticket created>{start_time} created<{end_time} via:voice',
-        'sort_by': 'created_at'
-    }
-
-    # Authenticate and search for tickets within the specified timeframe
-    search_response = requests.get(search_url, params=params, auth=(os.getenv('EMAIL'), os.getenv('Z_TOKEN')))
-    tickets = []
-    while True:
-        if search_response.status_code == 200:
-            data = search_response.json()
-            tickets = data['results']
-
-            for ticket in tickets:
-                info = {'id': ticket['id'], 'recording_url': '', 'customer': '', 'agent': '', 'transcription': '', 'summary': ''}
-                comments_url = f'https://{subdomain}.zendesk.com/api/v2/tickets/{ticket["id"]}/comments.json'
-                comments_response = requests.get(comments_url, auth=(os.getenv('EMAIL'), os.getenv('Z_TOKEN')))
-
-                if comments_response.status_code == 200:
-                    comments_data = comments_response.json()
-                    # print(json.dumps(comments_data, indent=4))  comment out everything after this loop
-                    for comment in comments_data['comments']:
-                        recording_url = comment.get('data', {}).get('recording_url')
-                        if recording_url:
-                            info['recording_url'] = recording_url
-                            info['customer'] = comment.get('via', {}).get('source', {}).get('from', {}).get('name')
-                            if info['customer'] == 'Brooklyn Low Voltage Supply':
-                                info['customer'] = comment.get('via', {}).get('source', {}).get('to', {}).get('name')
-                            info['agent'] = comment.get('data', {}).get('answered_by_name')
-                            tickets_info.append(info)
-                            count += 1
-
-            if data['next_page'] is not None:
-                    search_url = data['next_page']
-            else:
-                break
+load_dotenv()
+yesterday = date.today() - timedelta(days=1)
+today = date.today()
+# Specify the timeframe for your search (ISO 8601 format)
+start_time = f'{yesterday}T04:00:00Z'
+end_time = f'{today}T03:59:59Z'
+subdomain = os.getenv('SUBDOMAIN')
+# Search URL
+search_url = f'https://{subdomain}.zendesk.com/api/v2/search.json'
+params = {
+    'query': f'type:ticket created>{start_time} created<{end_time} via:voice',
+    'sort_by': 'created_at'
+}
+# Authenticate and search for tickets within the specified timeframe
+search_response = requests.get(search_url, params=params, auth=(os.getenv('Z_EMAIL'), os.getenv('Z_TOKEN')))
+tickets = []
+while True:
+    if search_response.status_code == 200:
+        data = search_response.json()
+        tickets = data['results']
+        for ticket in tickets:
+            info = {'id': ticket['id'], 'recording_url': '', 'customer': '', 'agent': '', 'transcription': '', 'summary': '', 'resolved': False, 'duration': (), 'company': ''}
+            comments_url = f'https://{subdomain}.zendesk.com/api/v2/tickets/{ticket["id"]}/comments.json'
+            comments_response = requests.get(comments_url, auth=(os.getenv('Z_EMAIL'), os.getenv('Z_TOKEN')))
+            if comments_response.status_code == 200:
+                comments_data = comments_response.json()
+                # print(json.dumps(comments_data, indent=4))  comment out everything after this loop
+                for comment in comments_data['comments']:
+                    recording_url = comment.get('data', {}).get('recording_url')
+                    if recording_url:
+                        info['recording_url'] = recording_url
+                        info['customer'] = comment.get('via', {}).get('source', {}).get('from', {}).get('name')
+                        if info['customer'] == 'Brooklyn Low Voltage Supply':
+                            info['customer'] = comment.get('via', {}).get('source', {}).get('to', {}).get('name')
+                        info['agent'] = comment.get('data', {}).get('answered_by_name')
+                        tickets_info.append(info)
+        if data['next_page'] is not None:
+                search_url = data['next_page']
         else:
             break
-    
-    curr -= 1
+    else:
+        break
+
 
 client = openai.OpenAI(api_key=os.getenv("C_TOKEN"))
 for idx, ticket in enumerate(tickets_info):
     print(f'Processing file {idx + 1}')
     recording_fp = download(ticket['recording_url'], idx+1)
+    audio = MP3(recording_fp)
+    ticket['duration'] = (int(audio.info.length//60), int(audio.info.length%60))
     if recording_fp:
         transcription_fp = summarize(recording_fp, ticket, client, 3, ticket['id'])
         if transcription_fp:
@@ -171,7 +180,7 @@ for idx, ticket in enumerate(tickets_info):
                 response = requests.post(
                     attachment_url, params={'filename': f'transcription_{ticket["id"]}'}, 
                     data=f, headers={'Content-Type': 'text/plain'}, 
-                    auth=(os.getenv('EMAIL'), os.getenv('Z_TOKEN'))
+                    auth=(os.getenv('Z_EMAIL'), os.getenv('Z_TOKEN'))
                 )
             upload_token = response.json()['upload']['token']
             ticket_url = f'https://{subdomain}.zendesk.com/api/v2/tickets/{ticket["id"]}'
@@ -184,14 +193,47 @@ for idx, ticket in enumerate(tickets_info):
                     }
                 }
             }
-            requests.request("PUT", ticket_url, auth=(os.getenv('EMAIL'), os.getenv('Z_TOKEN')), headers={'Content-Type': 'application/json'}, json=note)
+            requests.request("PUT", ticket_url, auth=(os.getenv('Z_EMAIL'), os.getenv('Z_TOKEN')), headers={'Content-Type': 'application/json'}, json=note)
 
-    
+# Send email
+sorted_tickets = sorted(tickets_info, key=lambda x: x['resolved'])
+credentials = credentials = ClientSecretCredential(
+    tenant_id=os.getenv("TENANT_ID"),
+    client_id=os.getenv("EMAIL_ID"),
+    client_secret=os.getenv("EMAIL_SECRET"),
+)
+scopes = ["https://graph.microsoft.com/.default"]
+graph_client = GraphServiceClient(credentials, scopes)
+email = "<br><br>".join(
+    [f"<b>Ticket {ticket['id']}: {'Resolved' if ticket['resolved'] else 'Not Resolved'} | Length of call: {ticket['duration'][0]} minutes {ticket['duration'][1]} seconds | Company: {ticket['company']}</b><br>{ticket['summary']}" for ticket in sorted_tickets]
+)
 
+async def send_email():
+    request_body = SendMailPostRequestBody(
+        message=Message(
+            subject="Ticket Summaries " + yesterday.strftime('%m/%d/%Y'),
+            body=ItemBody(
+                content_type=BodyType.Html,
+                content=email
+            ),
+            to_recipients=[
+                Recipient(
+                    email_address=EmailAddress(
+                        address=os.getenv("R_EMAIL")
+                    )
+                )
+            ],
+            # cc_recipients=[
+            #     Recipient(
+            #         email_address=EmailAddress(
+            #             address="danas@contoso.com"
+            #         )
+            #     )
+            # ]
+        ),
+        save_to_sent_items=False
+    )
 
+    await graph_client.users.by_user_id(os.getenv("S_EMAIL")).send_mail.post(request_body)
 
-
-
-### Save the support agent's name as well as which call by number
-### Next step: Continue testing for cost purposes. 
-### Add a check to limit token usage and send alerts if this happens.
+asyncio.run(send_email())
