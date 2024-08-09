@@ -10,7 +10,7 @@ Currently, Zendesk saves all call recordings, but reviewing these recordings man
 
 1. **Automated Summarization:** Use OpenAI's API to convert call recordings into text summaries.
 2. **Zendesk Integration:** Automatically associate these summaries with the relevant tickets in Zendesk.
-3. **Scheduled Execution:** Run the script daily to summarize calls from the last workday, ensuring timely and accurate records.
+3. **Email Summaries:** Send daily emails with a breakdown of the day's summaries
 
 This automation will allow support agents to focus on their conversations with clients without worrying about missing details, enhancing efficiency and service quality.
 
