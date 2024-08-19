@@ -109,7 +109,7 @@ def summarize(file_path, ticket, client, retries, idx):
         return txt_fp
     except Exception as e:
         logging.error(f"Could not process transcription for ticket {idx}.")
-        return None
+        return txt_fp
 
 # Main code
 
