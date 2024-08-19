@@ -177,13 +177,13 @@ client = openai.OpenAI(api_key=os.getenv("C_TOKEN"))
 for idx, ticket in enumerate(tickets_info):
     print(f'Processing file {idx + 1}')
     recording_fp = download(ticket['recording_url'], idx+1)
-    try:
-        audio = MP3(recording_fp)
-    except Exception:
-        logging.error(f"An error occurred with ticket {idx}: %s", traceback.format_exc())
-        continue
-    ticket['duration'] = (int(audio.info.length//60), int(audio.info.length%60))
     if recording_fp:
+        try:
+            audio = MP3(recording_fp)
+        except Exception:
+            logging.error(f"An error occurred with ticket {idx}: %s", traceback.format_exc())
+            continue
+        ticket['duration'] = (int(audio.info.length//60), int(audio.info.length%60))
         transcription_fp = summarize(recording_fp, ticket, client, 3, ticket['id'])
         if transcription_fp:
             attachment_url = f'https://{subdomain}.zendesk.com/api/v2/uploads.json'
