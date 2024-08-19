@@ -1,0 +1,10 @@
+2024-08-19 12:07:18,132 - ERROR - An error occurred with ticket 0: Traceback (most recent call last):
+  File "/Users/nicholasmeng/projects/Zendesk_Cost/main.py", line 182, in <module>
+    raise ValueError("This is a test error.")
+ValueError: This is a test error.
+
+2024-08-19 12:07:20,092 - ERROR - An error occurred with ticket 1: Traceback (most recent call last):
+  File "/Users/nicholasmeng/projects/Zendesk_Cost/main.py", line 182, in <module>
+    raise ValueError("This is a test error.")
+ValueError: This is a test error.
+

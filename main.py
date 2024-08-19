@@ -16,6 +16,8 @@ from msgraph.generated.models.item_body import ItemBody
 from msgraph.generated.models.body_type import BodyType
 from msgraph.generated.models.recipient import Recipient
 from msgraph.generated.models.email_address import EmailAddress
+import logging
+import traceback
 
 
 def download(url, idx):
@@ -38,15 +40,15 @@ def download(url, idx):
             file_path = f'recordings/recording_{idx}.mp3'
             with open(file_path, 'wb') as f:
                 for chunk in recording_response.iter_content(chunk_size=8192):
-                    if chunk:  # filter out keep-alive new chunks
+                    if chunk:
                         f.write(chunk)
             print(f"Downloaded: {file_path}")
             return file_path
         else:
-            print(f"Failed to download {ticket['recording_url']}, status code: {recording_response.status_code}")
+            logging.error(f"Failed to retrieve call recording for ticket {idx}: %s", traceback.format_exc())
             return None
     except Exception as e:
-        print(f"Error downloading {ticket['recording_url']}: {e}")
+        logging.error(f"An issue with the recording file occurred with ticket {idx}: %s", traceback.format_exc())
         return None
 
 def summarize(file_path, ticket, client, retries, idx):
@@ -95,24 +97,30 @@ def summarize(file_path, ticket, client, retries, idx):
                 ticket['company'] = chat.choices[0].message.content
                 if "This issue was resolved" in ticket['summary']:
                     ticket['resolved'] = True
-                break  # Exit the retry loop if successful
+                break  
             except (openai.InternalServerError, RequestException) as e:
                 if attempt < retries - 1:
-                    wait_time = 3 ** (attempt + 1)  # Exponential backoff
-                    print(f"Error: {e}. Retrying in {wait_time} seconds...")
+                    wait_time = 3 ** (attempt + 1)
                     time.sleep(wait_time)
                 else:
                     print(f"Error: {e}. Failed after {retries} attempts.")
+                    logging.error(f"An error with OpenAI occurred while processing ticket {idx}")
         
         return txt_fp
     except Exception as e:
-        print(f"Error processing {file_path}: {e}")
+        logging.error(f"Could not process transcription for ticket {idx}.")
         return None
 
 # Main code
 
 tickets_info = []
 
+logging.basicConfig(
+    filename='error_log.txt',  
+    filemode='a',              
+    format='%(asctime)s - %(levelname)s - %(message)s',
+    level=logging.ERROR
+)
 # Clear the folders before downloading
 if os.path.exists('recordings'):
     shutil.rmtree('recordings')
@@ -148,7 +156,6 @@ while True:
             comments_response = requests.get(comments_url, auth=(os.getenv('Z_EMAIL'), os.getenv('Z_TOKEN')))
             if comments_response.status_code == 200:
                 comments_data = comments_response.json()
-                # print(json.dumps(comments_data, indent=4))  comment out everything after this loop
                 for comment in comments_data['comments']:
                     recording_url = comment.get('data', {}).get('recording_url')
                     if recording_url:
@@ -170,7 +177,11 @@ client = openai.OpenAI(api_key=os.getenv("C_TOKEN"))
 for idx, ticket in enumerate(tickets_info):
     print(f'Processing file {idx + 1}')
     recording_fp = download(ticket['recording_url'], idx+1)
-    audio = MP3(recording_fp)
+    try:
+        audio = MP3(recording_fp)
+    except Exception:
+        logging.error(f"An error occurred with ticket {idx}: %s", traceback.format_exc())
+        continue
     ticket['duration'] = (int(audio.info.length//60), int(audio.info.length%60))
     if recording_fp:
         transcription_fp = summarize(recording_fp, ticket, client, 3, ticket['id'])
@@ -193,7 +204,8 @@ for idx, ticket in enumerate(tickets_info):
                     }
                 }
             }
-            requests.request("PUT", ticket_url, auth=(os.getenv('Z_EMAIL'), os.getenv('Z_TOKEN')), headers={'Content-Type': 'application/json'}, json=note)
+            if ticket['summary']:
+                requests.request("PUT", ticket_url, auth=(os.getenv('Z_EMAIL'), os.getenv('Z_TOKEN')), headers={'Content-Type': 'application/json'}, json=note)
 
 # Send email
 sorted_tickets = sorted(tickets_info, key=lambda x: x['resolved'])
