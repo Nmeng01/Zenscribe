@@ -217,7 +217,7 @@ credentials = credentials = ClientSecretCredential(
 scopes = ["https://graph.microsoft.com/.default"]
 graph_client = GraphServiceClient(credentials, scopes)
 email = "<br><br>".join(
-    [f"<b>Ticket {ticket['id']}: {'Resolved' if ticket['resolved'] else 'Not Resolved'} | Length of call: {ticket['duration'][0]} minutes {ticket['duration'][1]} seconds | Company: {ticket['company']}</b><br>{ticket['summary']}" for ticket in sorted_tickets]
+    [f"<b>Ticket {ticket['id']}: {'Resolved' if ticket['resolved'] else 'Not Resolved'} | Length of call: {ticket['duration'][0]} minutes {ticket['duration'][1]} seconds | Company: {ticket['company']}</b><br>{ticket['summary']}" for ticket in sorted_tickets if ticket['duration']]
 )
 
 async def send_email():
