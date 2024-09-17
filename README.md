@@ -4,7 +4,7 @@
 
 Customer support agents handle many calls each day, often without breaks between them. This makes it difficult to take detailed notes during or after each call, which is an issue because agents returning to this ticket at a later time/date need to be able to get up to speed on a customer's issue quickly. We can solve this problem by using Zenscribe, a script set up to automatically transcribe and summarize voice calls saved to Zendesk at the end of each day.  
 
-Zendesk has recently released their own version of this as an additional subscription cost, but at the time of development, there was no such tool and my company had a use for this functionality, so I was asked to create it on my own. 
+Zendesk has recently released their own version of this as part of their Advanced AI add-on subscription.
 
 ## Features
 
