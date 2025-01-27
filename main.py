@@ -80,24 +80,19 @@ def summarize(file_path, ticket, client, retries, idx):
         messages_summary = [
             {'role': 'system', 'content': 'You are an intelligent assistant.'},
             {'role': 'user', 'content': 
-            f'Summarize the issue faced by customer {ticket["customer"]} and how agent {ticket["agent"]} addressed it. Include the name of the customer\'s company if mentioned.' + 
-            f'Then, if the issue was resolved, say "This issue was resolved.", otherwise say "This issue was not resolved." ' +
-            f'Use no more than 150 words. Transcript: {transcription.text}'}
+            (f'Summarize the issue faced by customer {ticket["customer"]} and how agent {ticket["agent"]} addressed it.' + 
+            (f'The company name is {ticket["company"]}.' if ticket['company'] else 'Include the name of the customer\'s company.') +
+            (f'Note that this issue has been marked as resolved.' if ticket['resolved'] else 'Note that this issue was not resolved.') +
+            f'Use no more than 150 words. Transcript: {transcription.text}')}
         ]
         for attempt in range(retries):
             try:
                 chat = client.chat.completions.create(messages=messages_summary, model="gpt-4o")
                 print(chat.choices[0].message.content)
                 ticket['summary'] = chat.choices[0].message.content
-                messages_company = [
-                    {'role': 'system', 'content': 'You are an intelligent assistant.'},
-                    {'role': 'user', 'content': f'Return only the name of customer {ticket["customer"]}\'s company or Unknown based on this summary: {ticket["summary"]}.'}
-                ]
-                chat = client.chat.completions.create(messages=messages_company, model="gpt-4o")
-                ticket['company'] = chat.choices[0].message.content
-                if "This issue was resolved" in ticket['summary']:
-                    ticket['resolved'] = True
-                break  
+                if not ticket['company']:
+                    ticket['company'] = 'Not registered in Zendesk'
+                break
             except (openai.InternalServerError, RequestException) as e:
                 if attempt < retries - 1:
                     wait_time = 3 ** (attempt + 1)
@@ -159,6 +154,13 @@ while True:
                 for comment in comments_data['comments']:
                     recording_url = comment.get('data', {}).get('recording_url')
                     if recording_url:
+                        if ticket['organization_id']:
+                            org_url = f'https://{subdomain}.zendesk.com/api/v2/organizations/{ticket["organization_id"]}.json'
+                            org_response = requests.get(org_url, auth=(os.getenv('Z_EMAIL'), os.getenv('Z_TOKEN')))
+                            org_data = org_response.json()
+                            info['company'] = org_data['organization']['name']
+                        if ticket['status'] == 'solved' or ticket['status'] == 'closed':
+                            info['resolved'] = True
                         info['recording_url'] = recording_url
                         info['customer'] = comment.get('via', {}).get('source', {}).get('from', {}).get('name')
                         if info['customer'] == 'Brooklyn Low Voltage Supply':
@@ -184,6 +186,8 @@ for idx, ticket in enumerate(tickets_info):
             logging.error(f"An error occurred with ticket {idx}: %s", traceback.format_exc())
             continue
         ticket['duration'] = (int(audio.info.length//60), int(audio.info.length%60))
+        if ticket['duration'][0] == 0 and ticket['duration'][1] < 30:
+            continue
         transcription_fp = summarize(recording_fp, ticket, client, 3, ticket['id'])
         if transcription_fp:
             attachment_url = f'https://{subdomain}.zendesk.com/api/v2/uploads.json'
@@ -209,7 +213,7 @@ for idx, ticket in enumerate(tickets_info):
 
 # Send email
 sorted_tickets = sorted(tickets_info, key=lambda x: x['resolved'])
-credentials = credentials = ClientSecretCredential(
+credentials = ClientSecretCredential(
     tenant_id=os.getenv("TENANT_ID"),
     client_id=os.getenv("EMAIL_ID"),
     client_secret=os.getenv("EMAIL_SECRET"),
@@ -217,7 +221,7 @@ credentials = credentials = ClientSecretCredential(
 scopes = ["https://graph.microsoft.com/.default"]
 graph_client = GraphServiceClient(credentials, scopes)
 email = "<br><br>".join(
-    [f"<b>Ticket {ticket['id']}: {'Resolved' if ticket['resolved'] else 'Not Resolved'} | Length of call: {ticket['duration'][0]} minutes {ticket['duration'][1]} seconds | Company: {ticket['company']}</b><br>{ticket['summary']}" for ticket in sorted_tickets if ticket['duration']]
+    [f"<b>Ticket {ticket['id']}: {'Resolved' if ticket['resolved'] else 'Not Resolved'} | Length of call: {ticket['duration'][0]} minutes {ticket['duration'][1]} seconds | Company: {ticket['company']}</b><br>{ticket['summary']}" for ticket in sorted_tickets if ticket['duration'] and ticket['summary']]
 )
 
 async def send_email():
@@ -234,14 +238,7 @@ async def send_email():
                         address=os.getenv("R_EMAIL")
                     )
                 )
-            ],
-            # cc_recipients=[
-            #     Recipient(
-            #         email_address=EmailAddress(
-            #             address="danas@contoso.com"
-            #         )
-            #     )
-            # ]
+            ]
         ),
         save_to_sent_items=False
     )
